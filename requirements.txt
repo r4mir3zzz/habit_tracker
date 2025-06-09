@@ -5,5 +5,3 @@ plotly
 python-dotenv
 supabase
 python-dateutil
-smtplib
-email-validator
