@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import sqlite3
 import datetime
 import matplotlib.pyplot as plt
 import smtplib
@@ -8,9 +7,25 @@ import random
 import string
 from email.mime.text import MIMEText
 import os
+from supabase import create_client, Client
+from dotenv import load_dotenv  # Añade esta línea
+
+# Cargar variables de entorno al inicio del script
+load_dotenv()  # Añade esta línea
+
+# --- CONFIGURACIÓN SUPABASE ---
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Verifica que las variables se cargaron correctamente
+if not SUPABASE_URL or not SUPABASE_KEY:
+    st.error("Error: No se pudieron cargar las credenciales de Supabase. Verifica tu archivo .env")
+    st.stop()
+
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- CONFIGURACIÓN EMAIL ---
-EMAIL_SENDER = os.getenv("EMAIL_PASSWORD")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
@@ -30,68 +45,151 @@ def enviar_correo(destinatario, token):
 def generar_token():
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
-# --- BASE DE DATOS ---
-def crear_tablas():
-    with sqlite3.connect("habitos.db") as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS usuarios (
-                correo TEXT PRIMARY KEY,
-                username TEXT UNIQUE,
-                contrasena TEXT,
-                verificado INTEGER DEFAULT 0,
-                token TEXT
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS registros (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fecha TEXT,
-                usuario TEXT,
-                habito TEXT,
-                completado INTEGER
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS habitos_personalizados (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario TEXT NOT NULL,
-                habito TEXT NOT NULL
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS invitaciones (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                emisor TEXT NOT NULL,
-                receptor TEXT NOT NULL,
-                estado TEXT CHECK (estado IN ('pendiente', 'aceptada')) NOT NULL
-            )
-        ''')
-
-crear_tablas()
-
 # --- FUNCIONES DE USUARIO ---
 def registrar_usuario(correo, username, contrasena):
     token = generar_token()
-    with sqlite3.connect("habitos.db") as conn:
-        ya_existe = conn.execute("SELECT * FROM usuarios WHERE correo = ? OR username = ?", (correo, username)).fetchone()
-        if ya_existe:
+    try:
+        # Verificar si el usuario ya existe
+        res = supabase.table('usuarios').select('*').or_(f'correo.eq.{correo},username.eq.{username}').execute()
+        if len(res.data) > 0:
             return False, "El correo o el nombre de usuario ya están registrados."
-        conn.execute("INSERT INTO usuarios (correo, username, contrasena, token) VALUES (?, ?, ?, ?)", (correo, username, contrasena, token))
+        
+        # Insertar nuevo usuario
+        supabase.table('usuarios').insert({
+            'correo': correo,
+            'username': username,
+            'contrasena': contrasena,
+            'token': token,
+            'verificado': False
+        }).execute()
+        
         enviar_correo(correo, token)
         return True, "Te hemos enviado un código de verificación por correo."
+    except Exception as e:
+        return False, f"Error al registrar: {str(e)}"
 
 def verificar_usuario(correo, token_ingresado):
-    with sqlite3.connect("habitos.db") as conn:
-        usuario = conn.execute("SELECT token FROM usuarios WHERE correo = ?", (correo,)).fetchone()
-        if usuario and usuario[0] == token_ingresado:
-            conn.execute("UPDATE usuarios SET verificado = 1 WHERE correo = ?", (correo,))
+    try:
+        res = supabase.table('usuarios').select('token').eq('correo', correo).execute()
+        if res.data and res.data[0]['token'] == token_ingresado:
+            supabase.table('usuarios').update({'verificado': True}).eq('correo', correo).execute()
             return True
+        return False
+    except Exception as e:
+        st.error(f"Error al verificar: {str(e)}")
         return False
 
 def login_valido(correo, contrasena):
-    with sqlite3.connect("habitos.db") as conn:
-        res = conn.execute("SELECT verificado FROM usuarios WHERE correo = ? AND contrasena = ?", (correo, contrasena)).fetchone()
-        return res is not None and res[0] == 1
+    try:
+        res = supabase.table('usuarios').select('verificado').eq('correo', correo).eq('contrasena', contrasena).execute()
+        return res.data and res.data[0]['verificado']
+    except Exception as e:
+        st.error(f"Error en login: {str(e)}")
+        return False
+
+# --- FUNCIONES DE HÁBITOS ---
+def obtener_habitos(usuario):
+    try:
+        res = supabase.table('habitos_personalizados').select('habito').eq('usuario', usuario).execute()
+        return [h['habito'] for h in res.data]
+    except Exception as e:
+        st.error(f"Error al obtener hábitos: {str(e)}")
+        return []
+
+def agregar_habito(usuario, habito):
+    try:
+        supabase.table('habitos_personalizados').insert({
+            'usuario': usuario,
+            'habito': habito
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al agregar hábito: {str(e)}")
+        return False
+
+def eliminar_habito(usuario, habito):
+    try:
+        supabase.table('habitos_personalizados').delete().eq('usuario', usuario).eq('habito', habito).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al eliminar hábito: {str(e)}")
+        return False
+
+def agregar_registro(fecha, usuario, habito, completado):
+    try:
+        supabase.table('registros').insert({
+            'fecha': str(fecha),
+            'usuario': usuario,
+            'habito': habito,
+            'completado': completado
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al agregar registro: {str(e)}")
+        return False
+
+def obtener_registros(usuario):
+    try:
+        res = supabase.table('registros').select('*').eq('usuario', usuario).execute()
+        return pd.DataFrame(res.data)
+    except Exception as e:
+        st.error(f"Error al obtener registros: {str(e)}")
+        return pd.DataFrame()
+
+# --- FUNCIONES DE INVITACIONES ---
+def obtener_invitaciones_aceptadas(receptor):
+    try:
+        res = supabase.table('invitaciones').select('emisor').eq('receptor', receptor).eq('estado', 'aceptada').execute()
+        return [i['emisor'] for i in res.data]
+    except Exception as e:
+        st.error(f"Error al obtener invitaciones: {str(e)}")
+        return []
+
+def obtener_invitaciones_pendientes(receptor):
+    try:
+        res = supabase.table('invitaciones').select('id,emisor').eq('receptor', receptor).eq('estado', 'pendiente').execute()
+        return res.data
+    except Exception as e:
+        st.error(f"Error al obtener invitaciones pendientes: {str(e)}")
+        return []
+
+def enviar_invitacion(emisor, receptor):
+    try:
+        # Verificar si el receptor existe
+        res = supabase.table('usuarios').select('username').eq('username', receptor).execute()
+        if not res.data:
+            return False, "Ese usuario no existe."
+        
+        # Verificar si ya existe una invitación
+        res = supabase.table('invitaciones').select('*').eq('emisor', emisor).eq('receptor', receptor).execute()
+        if res.data:
+            return False, "Ya enviaste una invitación a ese usuario."
+        
+        # Crear nueva invitación
+        supabase.table('invitaciones').insert({
+            'emisor': emisor,
+            'receptor': receptor,
+            'estado': 'pendiente'
+        }).execute()
+        return True, "Invitación enviada."
+    except Exception as e:
+        return False, f"Error al enviar invitación: {str(e)}"
+
+def actualizar_invitacion(inv_id, estado):
+    try:
+        supabase.table('invitaciones').update({'estado': estado}).eq('id', inv_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al actualizar invitación: {str(e)}")
+        return False
+
+def eliminar_invitacion(inv_id):
+    try:
+        supabase.table('invitaciones').delete().eq('id', inv_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Error al eliminar invitación: {str(e)}")
+        return False
 
 # --- APP STREAMLIT ---
 st.title("📊 Seguimiento de Hábitos Compartido")
@@ -122,33 +220,14 @@ elif modo == "Iniciar sesión":
     contrasena = st.sidebar.text_input("Contraseña", type="password")
 
     if login_valido(correo, contrasena):
-        with sqlite3.connect("habitos.db") as conn:
-            username_actual = conn.execute("SELECT username FROM usuarios WHERE correo = ?", (correo,)).fetchone()[0]
+        try:
+            res = supabase.table('usuarios').select('username').eq('correo', correo).execute()
+            username_actual = res.data[0]['username']
+        except Exception as e:
+            st.error(f"Error al obtener usuario: {str(e)}")
+            st.stop()
 
         st.sidebar.success(f"Bienvenido/a {username_actual}")
-
-        def obtener_habitos(usuario):
-            with sqlite3.connect("habitos.db") as conn:
-                df = pd.read_sql_query("SELECT habito FROM habitos_personalizados WHERE usuario = ?", conn, params=(usuario,))
-            return df['habito'].tolist()
-
-        def agregar_habito(usuario, habito):
-            with sqlite3.connect("habitos.db") as conn:
-                conn.execute("INSERT INTO habitos_personalizados (usuario, habito) VALUES (?, ?)", (usuario, habito))
-
-        def eliminar_habito(usuario, habito):
-            with sqlite3.connect("habitos.db") as conn:
-                conn.execute("DELETE FROM habitos_personalizados WHERE usuario = ? AND habito = ?", (usuario, habito))
-
-        def agregar_registro(fecha, usuario, habito, completado):
-            with sqlite3.connect("habitos.db") as conn:
-                conn.execute("INSERT INTO registros (fecha, usuario, habito, completado) VALUES (?, ?, ?, ?)",
-                            (fecha, usuario, habito, completado))
-
-        def obtener_registros(usuario):
-            with sqlite3.connect("habitos.db") as conn:
-                df = pd.read_sql_query("SELECT * FROM registros WHERE usuario = ?", conn, params=(usuario,))
-            return df
 
         tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Registrar", "📈 Tu progreso", "👀 Ver otros", "⚙️ Mis hábitos", "📤 Compartir progreso"])
 
@@ -169,8 +248,8 @@ elif modo == "Iniciar sesión":
                 if not habito:
                     st.error("Selecciona un hábito primero")
                 else:
-                    agregar_registro(str(fecha), username_actual, habito, int(completado))
-                    st.success("Registro guardado")
+                    if agregar_registro(fecha, username_actual, habito, int(completado)):
+                        st.success("Registro guardado")
 
         with tab2:
             st.subheader("📈 Tu progreso")
@@ -194,13 +273,7 @@ elif modo == "Iniciar sesión":
 
         with tab3:
             st.subheader("👀 Ver progreso de otro usuario")
-            with sqlite3.connect("habitos.db") as conn:
-                invitados = conn.execute('''
-                    SELECT emisor FROM invitaciones
-                    WHERE receptor = ? AND estado = 'aceptada'
-                ''', (username_actual,)).fetchall()
-
-            disponibles = [u[0] for u in invitados]
+            disponibles = obtener_invitaciones_aceptadas(username_actual)
             if disponibles:
                 seleccionado = st.selectbox("Selecciona un usuario", disponibles)
                 df_otro = obtener_registros(seleccionado)
@@ -219,15 +292,15 @@ elif modo == "Iniciar sesión":
             if habitos_actuales:
                 habito_a_eliminar = st.selectbox("Eliminar hábito", habitos_actuales)
                 if st.button("Eliminar"):
-                    eliminar_habito(username_actual, habito_a_eliminar)
-                    st.success("Hábito eliminado")
-                    st.rerun()
+                    if eliminar_habito(username_actual, habito_a_eliminar):
+                        st.success("Hábito eliminado")
+                        st.rerun()
 
             nuevo_habito = st.text_input("Nuevo hábito")
             if st.button("Añadir") and nuevo_habito.strip():
-                agregar_habito(username_actual, nuevo_habito.strip())
-                st.success("Añadido")
-                st.rerun()
+                if agregar_habito(username_actual, nuevo_habito.strip()):
+                    st.success("Añadido")
+                    st.rerun()
 
         with tab5:
             st.subheader("📤 Compartir tu progreso con otros")
@@ -238,45 +311,27 @@ elif modo == "Iniciar sesión":
                 if username_destino == username_actual:
                     st.error("No puedes invitarte a ti mismo.")
                 else:
-                    with sqlite3.connect("habitos.db") as conn:
-                        existe = conn.execute("SELECT * FROM usuarios WHERE username = ?", (username_destino,)).fetchone()
-                        ya_invitado = conn.execute('''
-                            SELECT * FROM invitaciones
-                            WHERE emisor = ? AND receptor = ?
-                        ''', (username_actual, username_destino)).fetchone()
-
-                        if not existe:
-                            st.error("Ese usuario no existe.")
-                        elif ya_invitado:
-                            st.warning("Ya enviaste una invitación a ese usuario.")
-                        else:
-                            conn.execute('''
-                                INSERT INTO invitaciones (emisor, receptor, estado)
-                                VALUES (?, ?, 'pendiente')
-                            ''', (username_actual, username_destino))
-                            st.success("Invitación enviada.")
+                    ok, msg = enviar_invitacion(username_actual, username_destino)
+                    if ok:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
 
             st.markdown("### Invitaciones recibidas")
-            with sqlite3.connect("habitos.db") as conn:
-                recibidas = conn.execute('''
-                    SELECT id, emisor FROM invitaciones
-                    WHERE receptor = ? AND estado = 'pendiente'
-                ''', (username_actual,)).fetchall()
+            recibidas = obtener_invitaciones_pendientes(username_actual)
 
             if recibidas:
-                for inv_id, emisor in recibidas:
+                for inv in recibidas:
                     col1, col2, col3 = st.columns([2, 1, 1])
-                    col1.write(f"Invitación de: {emisor}")
-                    if col2.button("Aceptar", key=f"aceptar_{inv_id}"):
-                        with sqlite3.connect("habitos.db") as conn:
-                            conn.execute("UPDATE invitaciones SET estado = 'aceptada' WHERE id = ?", (inv_id,))
-                        st.success(f"Has aceptado la invitación de {emisor}")
-                        st.experimental_rerun()
-                    if col3.button("Rechazar", key=f"rechazar_{inv_id}"):
-                        with sqlite3.connect("habitos.db") as conn:
-                            conn.execute("DELETE FROM invitaciones WHERE id = ?", (inv_id,))
-                        st.warning(f"Has rechazado la invitación de {emisor}")
-                        st.experimental_rerun()
+                    col1.write(f"Invitación de: {inv['emisor']}")
+                    if col2.button("Aceptar", key=f"aceptar_{inv['id']}"):
+                        if actualizar_invitacion(inv['id'], 'aceptada'):
+                            st.success(f"Has aceptado la invitación de {inv['emisor']}")
+                            st.rerun()
+                    if col3.button("Rechazar", key=f"rechazar_{inv['id']}"):
+                        if eliminar_invitacion(inv['id']):
+                            st.warning(f"Has rechazado la invitación de {inv['emisor']}")
+                            st.rerun()
             else:
                 st.info("No tienes invitaciones pendientes.")
     else:

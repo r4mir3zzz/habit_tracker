@@ -1,3 +1,7 @@
 streamlit
 pandas
 matplotlib
+python-dotenv
+supabase
+python-dateutil
+smtplib
