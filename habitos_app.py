@@ -7,10 +7,11 @@ import smtplib
 import random
 import string
 from email.mime.text import MIMEText
+import os
 
 # --- CONFIGURACIÓN EMAIL ---
-EMAIL_SENDER = "lramireza616@gmail.com"
-EMAIL_PASSWORD = "fwksyemwtpzvnkzn"
+EMAIL_SENDER = os.getenv("EMAIL_PASSWORD")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
 
