@@ -104,7 +104,10 @@ if modo == "Crear cuenta":
     contrasena = st.text_input("Contraseña", type="password")
     if st.button("Registrarme"):
         ok, msg = registrar_usuario(correo, username, contrasena)
-        st.success(msg) if ok else st.error(msg)
+        if ok:
+            st.success(msg) 
+        else:
+            st.error(msg)
 
     token_input = st.text_input("Ingresa el código enviado por correo para verificar tu cuenta")
     if st.button("Verificar cuenta"):
