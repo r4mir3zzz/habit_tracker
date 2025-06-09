@@ -8,6 +8,7 @@ import string
 from email.mime.text import MIMEText
 import os
 from supabase import create_client, Client
+import plotly.graph_objects as go
 from dotenv import load_dotenv  # Añade esta línea
 
 # Cargar variables de entorno al inicio del script
@@ -253,37 +254,90 @@ elif modo == "Iniciar sesión":
 
         with tab2:
             st.subheader("📈 Tu progreso")
+
             df = obtener_registros(username_actual)
+
             if not df.empty:
-                resumen = df.groupby("habito")["completado"].sum()
-                st.dataframe(resumen)
+                # Convertir a fecha sin hora
+                df["fecha"] = pd.to_datetime(df["fecha"]).dt.date
 
-                fig, ax = plt.subplots()
-                resumen.plot(kind="bar", ax=ax)
-                ax.set_ylabel("Veces completado")
-                ax.set_title("Progreso por hábito")
-                st.pyplot(fig)
+                total_habitos = df["habito"].nunique()
 
-                total = df.groupby("habito").size()
-                cumplidos = df.groupby("habito")["completado"].sum()
-                porcentaje = (cumplidos / total * 100).round(1)
-                st.dataframe(porcentaje.rename("Cumplimiento (%)"))
+                completados_diarios = df[df["completado"] == 1].groupby("fecha").size()
+                progreso_diario = completados_diarios / total_habitos * 100
+                progreso_diario = progreso_diario.reindex(sorted(df["fecha"].unique()), fill_value=0)
+
+                st.dataframe(progreso_diario.rename("Cumplimiento diario (%)"))
+
+                # Crear gráfico usando fechas como strings para ocultar la hora
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=progreso_diario.index.astype(str),
+                    y=progreso_diario.values,
+                    mode="lines+markers",
+                    line=dict(color="mediumseagreen"),
+                    name="Cumplimiento (%)"
+                ))
+
+                fig.update_layout(
+                    title="Progreso Diario de Hábitos",
+                    xaxis_title="Fecha",
+                    yaxis_title="Cumplimiento (%)",
+                    yaxis=dict(range=[0, 100]),
+                    template="plotly_white",
+                    hovermode="x unified"
+                )
+
+                st.plotly_chart(fig, use_container_width=True)
+
             else:
                 st.info("No hay registros aún.")
+
+        
 
         with tab3:
             st.subheader("👀 Ver progreso de otro usuario")
             disponibles = obtener_invitaciones_aceptadas(username_actual)
+
             if disponibles:
                 seleccionado = st.selectbox("Selecciona un usuario", disponibles)
                 df_otro = obtener_registros(seleccionado)
+
                 if not df_otro.empty:
-                    resumen_otro = df_otro.groupby("habito")["completado"].sum()
-                    st.dataframe(resumen_otro)
+                    df_otro["fecha"] = pd.to_datetime(df_otro["fecha"]).dt.date
+                    total_habitos_otro = df_otro["habito"].nunique()
+
+                    completados_diarios_otro = df_otro[df_otro["completado"] == 1].groupby("fecha").size()
+                    progreso_diario_otro = completados_diarios_otro / total_habitos_otro * 100
+                    progreso_diario_otro = progreso_diario_otro.reindex(sorted(df_otro["fecha"].unique()), fill_value=0)
+
+                    st.dataframe(progreso_diario_otro.rename("Cumplimiento diario (%)"))
+
+                    fig_otro = go.Figure()
+                    fig_otro.add_trace(go.Scatter(
+                        x=progreso_diario_otro.index.astype(str),
+                        y=progreso_diario_otro.values,
+                        mode="lines+markers",
+                        line=dict(color="dodgerblue"),
+                        name=f"Progreso de {seleccionado}"
+                    ))
+
+                    fig_otro.update_layout(
+                        title=f"Progreso Diario de {seleccionado}",
+                        xaxis_title="Fecha",
+                        yaxis_title="Cumplimiento (%)",
+                        yaxis=dict(range=[0, 100]),
+                        template="plotly_white",
+                        hovermode="x unified"
+                    )
+
+                    st.plotly_chart(fig_otro, use_container_width=True)
+
                 else:
                     st.info("Sin registros aún.")
             else:
                 st.info("Nadie te ha invitado aún.")
+
 
         with tab4:
             st.subheader("⚙️ Mis hábitos")
